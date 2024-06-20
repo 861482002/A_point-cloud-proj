@@ -5,5 +5,5 @@
 
 # 使用integration运行此项目
 ```python
-python integration.py --plane 4
+python integration.py --plane {int}
 ```
