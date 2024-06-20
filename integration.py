@@ -14,7 +14,7 @@ import torch
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-from arguments import Config
+from arguments import Config, get_args
 from PCReg.build_reg import Registration
 from Pointnet_Pointnet2.build_pointnet import PointNet
 from my_utils import *
@@ -42,7 +42,7 @@ class Integration:
 		self.cfg = cfg
 		self.reg_model = Registration(cfg) if cfg.use_reg else None
 
-		self.pointnet_model = PointNet(cfg)
+		self.pointnet_model = PointNet(cfg) if cfg.use_pointnet else None
 
 		self.postreg_ply = None
 
@@ -115,7 +115,13 @@ class Integration:
 
 		return post_reg_ply, result_icp.transformation
 
-	def pointnet_forward(self, points_list: List[np.ndarray], return_dim=512) -> np.ndarray:
+	def transformation(self,point_cloud:PointCloud,transformation:ndarray) -> PointCloud:
+
+		point_cloud_copy = copy.deepcopy(point_cloud)
+		point_cloud_copy.transform(transformation)
+		return point_cloud_copy
+
+	def pointnet_forward(self, points_list: List[np.ndarray], return_dim=512,norm = True) -> np.ndarray:
 		'''
 		批量pointnet++的特征提取
 		Parameters
@@ -129,7 +135,7 @@ class Integration:
 		features = []
 		for cur_point in points_list:
 			single_point = torch.tensor(cur_point, dtype=torch.float32).unsqueeze(0)
-			single_featurn = self.pointnet_model(single_point, return_dim=return_dim)
+			single_featurn = self.pointnet_model(single_point, return_dim=return_dim,norm=norm)
 			single_featurn = single_featurn.cpu().numpy()
 			features.append(single_featurn)
 		features = np.concatenate(features, axis=0)
@@ -151,6 +157,12 @@ class Integration:
 		# shape不一样
 		return self.segmented_ply
 
+	def pc_normalize(self,pc:ndarray)->ndarray:
+		centroid = np.mean(pc, axis=0)
+		pc = pc - centroid
+		m = np.max(np.sqrt(np.sum(pc ** 2, axis=1)))
+		pc = pc / m
+		return pc
 	def segment_cad(self, cad_file: Optional[str] = None, out_dir: Optional[str] = None) -> List:
 		# TODO 先写死，后续调用c++的程序进行分割
 
@@ -166,16 +178,18 @@ class Integration:
 		return self.segmented_cad
 		pass
 
-	def select_plane(self,plane_list: List[ndarray]) -> np.ndarray:
+	def select_plane(self,plane_list: List[ndarray],idx) -> np.ndarray:
 		# TODO 先写死，后续会添加参数作为判断条件
-		idx = 0
+		idx = idx
 		pcd = plane_list[idx]
 		return pcd
 
 		pass
 
-	def faiss_match(self):
+	def faiss_match(self,query:np.ndarray,query_dir: str, Index:np.ndarray):
 		# TODO 特征检索匹配
+		matched_file = feature_match(query, query_dir, Index)
+		self.matched_file = matched_file
 		pass
 
 	def visualize(self, pcd1: ndarray, pcd2: ndarray, *args):
@@ -187,12 +201,40 @@ class Integration:
 
 if __name__ == '__main__':
 	# 初始化
+	args = get_args()
 	cfg = Config()
+	cfg.plane = args.plane
 	integration = Integration(cfg)
-	'''测试配准                     pass'''
+
+	'''测试pointnet特征提取，并且保存成txt文件                  pass'''
+	# dir = './data/segmentply'
+	# feature_dir = './data/feature256'
+	# os.makedirs(feature_dir, exist_ok=True)
+	# pcd_list = []
+	# file_list = os.listdir(dir)
+	# for file in file_list:
+	# 	pcd = read_ply(os.path.join(dir, file))
+	# 	points = np.asarray(pcd.points)
+	# 	pcd_list.append(points)
+	# feature_list = integration.pointnet_forward(pcd_list, 256, norm=False)
+	# for i, feature in enumerate(feature_list):
+	# 	filename = file_list[i].split('.')[0]
+	# 	np.savetxt(os.path.join(feature_dir, f'{filename}.txt'), feature)
+
+	'''测试配准 深度模型                     pass
+		  测试配准 传统ICP方法                  pass
+	   '''
 	# source = read_ply('./data/1.ply')
 	# target = read_ply('./data/lingjian1-1.ply')
-	# postreg_source = integration.reg_ply_cad_icp(source, target)
+	# o3d.visualization.draw_geometries([source, target])
+	# postreg_source = integration.reg_ply_cad_deepmodel('./data/1.ply', './data/lingjian1-1.STL', cfg)
+	#
+	# source.points = o3d.utility.Vector3dVector(postreg_source)
+	# o3d.visualization.draw_geometries([source,target])
+	#
+	# source = read_ply('./data/1.ply')
+	# postreg,transformation = integration.reg_ply_cad_icp(source, target)
+	# o3d.visualization.draw_geometries([postreg, target])
 
 	# postreg_ply = integration.reg_ply_cad('./data/1.ply', './data/lingjian1-1.STL', cfg)
 	# print(postreg_ply.shape)
@@ -212,50 +254,79 @@ if __name__ == '__main__':
 
 	'''整体流程                         pass'''
 
+
+
 	# 1、配准
 	source = read_ply('./data/1.ply')
 	target = read_ply('./data/lingjian1-1.ply')
-	postreg_source, transformation = integration.reg_ply_cad_icp(source, target)
+	o3d.visualization.draw_geometries([source.paint_uniform_color([1,0,0]), target.paint_uniform_color([0,1,0]),axis])
+	# postreg_source, transformation = integration.reg_ply_cad_icp(source, target)
+	transformation = np.load('transformation.npy')
+	postreg_source = integration.transformation(source, transformation)
+	o3d.visualization.draw_geometries([postreg_source.paint_uniform_color([1,0,0]), target.paint_uniform_color([0,1,0]), axis])
+	# np.save('transformation.npy', transformation)
 	# 2、分割 配准后的点云和原始cad
-	postreg_source_dir = './temp/seg_postreg_source'
-	segmentation_plan(postreg_source, postreg_source_dir)
-	target_dir = './temp/seg_target'
-	segmentation_plan(target, target_dir)
-	# 3、读取分割后的数据
+	postreg_source_dir = './data/segment_1_ply'
+	# segmentation_plan(postreg_source, postreg_source_dir)
+	target_dir = './data/my_segment_lingjian1_c++'
+	# segmentation_plan(target, target_dir)
+	# # 3、读取分割后的数据
 	seg_postreg_source = []
 	seg_target = []
+	seg_target_normalized = []
 
+
+	# 先配准后，得到了变换矩阵 transformation，然后应用到分割后的源矩阵
 	for file in os.listdir(postreg_source_dir):
 		pcd = read_ply(os.path.join(postreg_source_dir, file))
-		seg_postreg_source.append(np.asarray(pcd.points))
+		pcd = integration.transformation(pcd, transformation)
+		pcd = np.asarray(pcd.points)
+		pcd_normalized = integration.pc_normalize(pcd)
+		seg_postreg_source.append(pcd)
 
+	# 目标文件不用配准
 	for file in os.listdir(target_dir):
 		pcd = read_ply(os.path.join(target_dir, file))
-		seg_target.append(np.asarray(pcd.points))
+		# pcd = integration.transformation(pcd, transformation)
+		pcd = np.asarray(pcd.points)
+		seg_target.append(pcd)
+		pcd_normalized = integration.pc_normalize(pcd)
+		seg_target_normalized.append(pcd_normalized)
 	# 4、通过给定的条件选取一个面
-	selected_cad_plane = integration.select_plane(seg_target)
+	selected_cad_plane = integration.select_plane(seg_target,idx = cfg.plane)
+	full_points = np.asarray(target.points)
+	index = find_index(full_points, selected_cad_plane)
+
+	selected_cad_plane_show = full_points[index]
+	selected_cad_plane_show = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(selected_cad_plane_show))
+	o3d.visualization.draw_geometries([selected_cad_plane_show.paint_uniform_color([0, 0,1]),target.paint_uniform_color([0,1,0]),axis])
 
 	# 5、使用pointnet++来提取特征
-	# 返回的shape[分割后的平面数量，256]
-	feature_ply = integration.pointnet_forward(seg_postreg_source, return_dim=256)
-	# 返回的shape[1,256]
-	feature_plane = integration.pointnet_forward([selected_cad_plane], return_dim=256)
+	# 返回的shape[分割后的平面数量，256/512]
+	feature_ply = integration.pointnet_forward(seg_postreg_source, return_dim=512,norm = False)
+	# 返回的shape[1,256/512]
+	feature_plane = integration.pointnet_forward([selected_cad_plane], return_dim=512,norm = False)
 
-	matched_file = feature_match(feature_ply, postreg_source_dir, feature_plane)
+	matched_file = feature_match(feature_ply, postreg_source_dir, feature_plane,topk=cfg.topk, plane = cfg.plane)
 
-	matched_file = os.path.join(postreg_source_dir, matched_file)
+	# matched_file = os.path.join(postreg_source_dir, matched_file)
 	print(matched_file)
-	matched_ply = read_ply(matched_file)
-	matched_ply.paint_uniform_color([1.0, 0, 0])
+
+	# 读取匹配后的文件
+	matched_ply = []
+	for file in matched_file:
+		cur_ply = read_ply(file)
+		cur_ply = integration.transformation(cur_ply, transformation)
+		cur_ply.paint_uniform_color([1.0, 0, 0])
+		matched_ply.append(cur_ply)
 	selected_cad_plane = o3d.utility.Vector3dVector(selected_cad_plane)
 	selected_pcd = o3d.geometry.PointCloud(selected_cad_plane)
 	selected_pcd.paint_uniform_color([0, 1.0, 0])
+	show_list = [selected_pcd] + matched_ply + [axis]
+	o3d.visualization.draw_geometries(show_list)
 
-	o3d.visualization.draw_geometries([matched_ply, selected_pcd,axis])
-	#
-	# matched_ply = np.asarray(matched_ply.points)
-	#
-	#
 	# # 6、可视化
-	# visualize_point_clouds(matched_ply, selected_cad_plane, 0, 0)
+	# match = matched_ply[-1]
+	# match = np.asarray(match.points)
+	# visualize_point_clouds(match, np.asarray(selected_pcd.points), 0, 0)
 	pass
