@@ -4,3 +4,6 @@
 ![流程图](./img/流程图.png)
 
 # 使用integration运行此项目
+‘’‘
+python integration.py --plane 4
+’‘’
